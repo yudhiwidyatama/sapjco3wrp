@@ -21,10 +21,9 @@ package org.pentaho.di.trans.steps.sapinput.sap.impl;
 
 import java.io.File;
 import java.io.FileOutputStream;
-import java.util.Collection;
-import java.util.Properties;
-import java.util.Vector;
+import java.util.*;
 
+import com.sap.conn.jco.*;
 import org.pentaho.di.core.database.DatabaseMeta;
 import org.pentaho.di.i18n.BaseMessages;
 import org.pentaho.di.trans.steps.sapinput.SapInputMeta;
@@ -39,14 +38,6 @@ import org.pentaho.di.trans.steps.sapinput.sap.SAPLibraryTester;
 import org.pentaho.di.trans.steps.sapinput.sap.SAPResultSet;
 import org.pentaho.di.trans.steps.sapinput.sap.SAPRow;
 
-import com.sap.conn.jco.JCoDestination;
-import com.sap.conn.jco.JCoDestinationManager;
-import com.sap.conn.jco.JCoException;
-import com.sap.conn.jco.JCoFunction;
-import com.sap.conn.jco.JCoParameterList;
-import com.sap.conn.jco.JCoRecord;
-import com.sap.conn.jco.JCoStructure;
-import com.sap.conn.jco.JCoTable;
 import com.sap.conn.jco.ext.DestinationDataProvider;
 
 // import com.sap.conn.jco.ext.Environment;
@@ -64,7 +55,7 @@ public class SAPConnectionImpl implements SAPConnection {
 	public void open(DatabaseMeta sapConnection) throws SAPException {
 		open(SAPConnectionParamsHelper.getFromDatabaseMeta(sapConnection));
 	}
-
+	List<String> scalarExids = Arrays.asList("D","C","N");
 	public void open(SAPConnectionParams params) throws SAPException {
 
 		String connectionname = params.getName();
@@ -218,9 +209,45 @@ public class SAPConnectionImpl implements SAPConnection {
 			sfs.setOutput(getTableFields(tablename));
 			return sfs;
 		}
-		
 		// normal processing
 		SAPFunctionSignature sfs = new SAPFunctionSignature();
+
+		try {
+			JCoFunction f1 = this.destination.getRepository().getFunction(functionname);
+			JCoParameterList parameterList = f1.getExportParameterList();
+			System.out.println ("export plist field count = " + parameterList.getFieldCount());
+			int ix;
+
+			for (ix=0; ix<parameterList.getFieldCount(); ix++) {
+				String paramname = parameterList.getListMetaData().getName(ix);
+				System.out.println("recordfieldname = " + parameterList.getListMetaData().getRecordFieldName(ix) +
+						"; name=" + parameterList.getListMetaData().getName(ix) + ";type=" + parameterList.getListMetaData().getTypeAsString(ix));
+				if (parameterList.getListMetaData().getTypeAsString(ix).equals("TABLE"))
+				{
+					JCoTable table = parameterList.getTable(parameterList.getListMetaData().getName(ix));
+					JCoRecordMetaData recordMetaData = table.getRecordMetaData();
+					for (int fldNo = 0; fldNo < recordMetaData.getFieldCount(); fldNo++)
+					{
+						String name = recordMetaData.getName(fldNo);
+						SAPField sapField = new SAPField(name, paramname, "output_table");
+						String dtyp = recordMetaData.getTypeAsString(fldNo);
+						sapField.setTypePentaho(getTypePentahoFromSTR(dtyp));
+						sapField.setTypeSAP(dtyp);
+						sfs.getOutput().add(sapField);
+
+						System.out.println("table:" + paramname
+								+ ":fieldname:"+name
+								+ ":type:"+dtyp
+								+":class:"+recordMetaData.getClassNameOfField(fldNo));
+					}
+
+				}
+			}
+		} catch
+			(JCoException e) {
+				e.printStackTrace();
+				throw new SAPException("Cannot get SAP function signature", e);
+		}
 		try {
 			JCoFunction f = this.destination.getRepository().getFunction(
 					"RFC_GET_FUNCTION_INTERFACE");
@@ -237,9 +264,10 @@ public class SAPConnectionImpl implements SAPConnection {
 				String exid = t.getString("EXID");
 				String defaultvalue = t.getString("DEFAULT");
 				String description = t.getString("PARAMTEXT");
+				System.out.println("table:PARAMS:io:"+io+":name:"+name + ":tab:"+tab+":field:"+field+":exid:"+exid);
 				// String optional = t.getString("OPTIONAL");
 				if ("I".equalsIgnoreCase(io)) {
-					if (field.isEmpty()) {
+					if (field.isEmpty() && !scalarExids.contains(exid.intern())) {
 						getTable("input_structure", sfs.getInput(), tab, name);
 					} else {
 						SAPField inputfield = new SAPField(name, "", "input_single");
@@ -298,7 +326,17 @@ public class SAPConnectionImpl implements SAPConnection {
 			throw e;
 		}
 	}
+	private String getTypePentahoFromSTR(String str) {
+		String typePentaho = "Object";
+		if ("CHAR".equalsIgnoreCase(str))
+			return "String";
+		if ("NUM".equalsIgnoreCase(str))
+			return "String";
+		if ("BCD".equalsIgnoreCase(str))
+			return "Number";
+		return "Object";
 
+	}
 	private String getTypePentahoFromDTYP(String dtyp) {
 		String typePentaho = "Object";
 		if ("CHAR".equalsIgnoreCase(dtyp)) {
@@ -451,11 +489,22 @@ public class SAPConnectionImpl implements SAPConnection {
 		// get output
 		if (output_tabname != null) {
 			JCoParameterList tableParameterList = f.getTableParameterList();
-			if (tableParameterList == null)
-				throw new SAPException(
+			JCoParameterList exportParameterList = f.getExportParameterList();
+			if (tableParameterList != null)
+			{
+				JCoTable t = tableParameterList.getTable(output_tabname);
+				if (t != null)
+					return new SAPRowIterator(t, outputfields, output_tabname);
+			}
+			if (exportParameterList != null)
+			{
+				JCoTable t = exportParameterList.getTable(output_tabname);
+				if (t != null)
+					return new SAPRowIterator(t, outputfields, output_tabname);
+			}
+			throw new SAPException(
 						"There is no table parameter list. Did you use 'Table' instead of 'Structure'?");
-			JCoTable t = tableParameterList.getTable(output_tabname);
-			return new SAPRowIterator(t, outputfields, output_tabname);
+
 		} else if (output_structname != null) {
 			JCoParameterList exportParameterList = f.getExportParameterList();
 			if (exportParameterList == null)

@@ -88,7 +88,15 @@ public class SAPRowIterator implements Iterator<SAPRow> {
 		SAPRow sr = new SAPRow();
 		for (SAPField field : outputfields) {
 			String name = field.getName();
-			Object value = record.getValue(name);
+			Object value;
+			if (name.contains("|"))
+			{
+				String[] namez =  name.split("\\|");
+				String name1 = namez[0];
+				String name2 = namez[1];
+				value = record.getStructure(name1).getValue(name2);
+			}else
+			    value = record.getValue(name);
 			String type = "Object";
 			if (value != null) {
 				if (value instanceof String) {
